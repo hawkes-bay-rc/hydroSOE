@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, date
 import math
 import random
 
-
+import goodness_of_fit as gof
 from htmlTables import Table
 
 
@@ -46,8 +46,8 @@ def getSiteList(measurement):
     requestType = "SiteList"
     myWebRequest =  apiRoot + '&Request='+requestType + '&Measurement='+myMeasurement
     #print(myWebRequest)
-    r = requests.get(myWebRequest)
-    #print(r.text)
+    r = requests.get(myWebRequest,headers={'origin': 'https://dev.hbrc.govt.nz'})
+    print(r.text,'reply')
     sites = []
     root = ET.fromstring(r.content)
     for child in root.iter('*'):
@@ -116,11 +116,9 @@ def fetchRiverPCal():
         print(gapYears)
         
         ##pragma code
-        #print(currentStats)
-        #print(longTermStats)
-        
         currentStats = clearBlanksConvert(currentStats)
         longTermStats = clearBlanksConvert(longTermStats)
+        #print(currentStats,longTermStats)
         
         doThePlots(currentStats,longTermStats)
         doTheTable(currentStats,longTermStats)
@@ -139,18 +137,26 @@ def clearBlanksConvert(jsonVar):
 def doTheTable(currentStats,longTermStats):
     monthlyStatsTable = Table(('Analysis period',
                                'Jul', 'Aug','Sep','Oct','Nov','Dec',
-                               'Jan','Feb','Mar','Apr','May','Jun'))
+                               'Jan','Feb','Mar','Apr','May','Jun','NSE'))
+    
     #print(currentStats)
     for thsYear in currentStats:
         #print(currentStats[thsYear][:12])
         temp = [thsYear+'-'+str(int(thsYear)+1)]
         temp.extend(list(currentStats[thsYear][:12]))
+        
+        dftemp = pd.DataFrame({'yr':currentStats[thsYear][:12],'mn':longTermStats['Mean'][:12]})
+        dftemp = dftemp.dropna()
+        #print(dftemp.head())
+        temp.extend([round(gof.nse(dftemp['mn'], dftemp['yr']),3)])
+        
         monthlyStatsTable.add(temp)
     
     for stat in longTermStats:
         #print(currentStats[thsYear][:12])
         temp = ['long term '+stat]
         temp.extend(list(longTermStats[stat][:12]))
+        temp.extend([''])
         monthlyStatsTable.add(temp)
     
     monthlyStatsTable.display_notebook()
