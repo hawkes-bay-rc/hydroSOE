@@ -3,5 +3,6 @@ pandas
 bokeh
 scipy
 goodness_of_fit
+pymannkendall
 ipywidgets
 jupyter_contrib_nbextensions
