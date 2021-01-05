@@ -11,6 +11,8 @@ import math
 import random
 
 import goodness_of_fit as gof
+import pymannkendall as pmk
+
 from htmlTables import Table
 
 
@@ -47,7 +49,7 @@ def getSiteList(measurement):
     myWebRequest =  apiRoot + '&Request='+requestType + '&Measurement='+myMeasurement
     #print(myWebRequest)
     r = requests.get(myWebRequest,headers={'origin': 'https://dev.hbrc.govt.nz'})
-    print(r.text,'reply')
+    #print(r.text,'reply')
     sites = []
     root = ET.fromstring(r.content)
     for child in root.iter('*'):
@@ -59,10 +61,22 @@ def getSiteList(measurement):
 def fetchRiverPCal():
     global climStart
     
-    temp = datetime.strptime(myStartDate,'%Y-%m-%d %H:%M:%S') - timedelta(days=31*365.25)
+    try:
+        temp = datetime.strptime(myStartDate,'%Y-%m-%d %H:%M:%S') - timedelta(days=31*365.25) #31 years?
+    except Exception as e:
+        try:
+            temp = datetime.strptime(myStartDate,'%Y-%m-%d') - timedelta(days=31*365.25)
+        except Exception as er:
+            print(err)
     #this has to be updated, timedelta doesn't have functionality for years 
     #and days can alter in case of leap years
-    climStart = datetime.strptime(str(temp.timetuple().tm_year)+myStartDate[4:],'%Y-%m-%d %H:%M:%S')
+    try:
+        climStart = datetime.strptime(str(temp.timetuple().tm_year)+myStartDate[4:],'%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        try:
+            climStart = datetime.strptime(str(temp.timetuple().tm_year)+myStartDate[4:],'%Y-%m-%d')
+        except Exception as er:
+            print(err)
     startYear = int(myStartDate[:4])
     
     myWebRequest =  apiRoot + "&Request=Hydro"
@@ -85,6 +99,7 @@ def fetchRiverPCal():
     #print(r.text)
     
     currentStats = {}
+    pastStats = {}
     longTermStats = {}
     gapYears = []
     root = ET.fromstring(r.content)
@@ -103,6 +118,8 @@ def fetchRiverPCal():
                             gapYears.append(child.attrib["Year"])
                         if int(child.attrib["Year"]) >= startYear:
                             currentStats[child.attrib["Year"]] = child.text.split(',')
+                        else:
+                            pastStats[child.attrib["Year"]] = child.text.split(',')
             if node.tag == 'Summary':
                 for child in node:
                     if child.tag == 'Min':
@@ -111,18 +128,32 @@ def fetchRiverPCal():
                         longTermStats["Max"] = child.text.split(',')
                     if child.tag == 'Mean':
                         longTermStats["Mean"] = child.text.split(',')
-                        
+        
+        print('Data for this site is available from ', list(pastStats.keys())[0])
         print('The following years have data gaps')
         print(gapYears)
         
         ##pragma code
         currentStats = clearBlanksConvert(currentStats)
+        pastStats = clearBlanksConvert(pastStats)
+        #print(pastStats)
         longTermStats = clearBlanksConvert(longTermStats)
         #print(currentStats,longTermStats)
         
         doThePlots(currentStats,longTermStats)
+        
+        print("NSE Threshold",round(gof.nse(0.75*np.array(longTermStats['Mean'][:12]),longTermStats['Mean'][:12]),3))
         doTheTable(currentStats,longTermStats)
-
+        
+        print("Trends in annual mean flow")
+        trendClim = doTheAnnMeanFlowTrends(pastStats) #return two results for original and modified tests, use index 0
+        print(list(pastStats.keys())[0],'-',list(pastStats.keys())[-1],':', trendClim[0].trend)
+        trendAll = doTheAnnMeanFlowTrends(pastStats,currentStats)
+        print(list(pastStats.keys())[0],'-',list(currentStats.keys())[-1],':',trendAll[0].trend)
+        if trendClim[0].h is True and trendAll[0].h is True :
+            print(list(pastStats.keys())[0],'-',list(pastStats.keys())[-1],':', trendClim[0].slope)
+            print(list(pastStats.keys())[0],'-',list(currentStats.keys())[-1],':',trendAll[0].slope)
+        
 def clearBlanksConvert(jsonVar):
     for thsKeys in jsonVar:
             verifiedSets = []
@@ -133,7 +164,22 @@ def clearBlanksConvert(jsonVar):
                     verifiedSets.append(float('nan'))
             jsonVar[thsKeys] = verifiedSets
     return jsonVar
-        
+
+def doTheAnnMeanFlowTrends(pastStats, currentStats = None):
+    tSeries = []
+    for key in pastStats:
+        #tSeries.extend(pastStats[key][:12])
+        tSeries.append(pastStats[key][12])
+        #print(pastStats[key])
+    
+    if currentStats is not None:
+        for key in currentStats:
+            tSeries.append(currentStats[key][12])
+    
+    #print(len(tSeries), sum(tSeries)/len(tSeries))
+    #print(tSeries)
+    return [pmk.original_test(tSeries), pmk.hamed_rao_modification_test(tSeries)]
+
 def doTheTable(currentStats,longTermStats):
     monthlyStatsTable = Table(('Analysis period',
                                'Jul', 'Aug','Sep','Oct','Nov','Dec',
@@ -148,7 +194,8 @@ def doTheTable(currentStats,longTermStats):
         dftemp = pd.DataFrame({'yr':currentStats[thsYear][:12],'mn':longTermStats['Mean'][:12]})
         dftemp = dftemp.dropna()
         #print(dftemp.head())
-        temp.extend([round(gof.nse(dftemp['mn'], dftemp['yr']),3)])
+        temp.extend([round(gof.nse(dftemp['yr'], dftemp['mn']),3)])
+        #print(gof.rd(dftemp['yr'], dftemp['mn']))
         
         monthlyStatsTable.add(temp)
     
@@ -164,6 +211,7 @@ def doTheTable(currentStats,longTermStats):
         
 def doThePlots(currentStats,longTermStats):        
         p1 = figure(x_axis_type="datetime", y_axis_type="log", title='Monthly mean flow' + ' at ' + mySite)
+        #p1 = figure(x_axis_type="datetime", title='Monthly mean flow' + ' at ' + mySite)
         p1.xaxis.formatter=DatetimeTickFormatter(days="%b", months="%b", hours="%b", minutes="%b")
         p1.grid.grid_line_alpha=0.3
         p1.xaxis.axis_label = 'Month'
@@ -186,19 +234,20 @@ def doThePlots(currentStats,longTermStats):
                  y2=[0.75*y for y in longTermStats["Mean"][:12]],
                  legend_label='Normal', color='yellow', alpha=0.5)
         
-        dashDeck = list(range(4, 10))
+        #print(len(currentStats))
+        dashDeck = list(range(4, 4+2*len(currentStats)+1))
         random.shuffle(dashDeck)
         
-        colorDeck = list(range(0, 3))
+        colorDeck = list(range(0, len(currentStats)+1))
         random.shuffle(colorDeck)
         
-        lnWidthDeck = list(range(0,5))
+        lnWidthDeck = list(range(0,len(currentStats)+2))
         random.shuffle(lnWidthDeck)
         
         for thsYear in currentStats:
             p1.line(time, currentStats[thsYear][:12],  legend_label=thsYear,
                     line_dash=[dashDeck.pop(), dashDeck.pop()],
-                    color=d3['Category10'][3][colorDeck.pop()], line_width=lnWidthDeck.pop())
+                    color=d3['Category10'][len(currentStats)+1][colorDeck.pop()], line_width=lnWidthDeck.pop())
         
         show(gridplot([[p1]], ))
 
@@ -271,7 +320,7 @@ def genHydroStats():
                               'Mean/Median'))
     
     temp = genStatsSubFn(dailyData,InstData,int(climStart.year),int(myEndDate[:4]))
-    ltMedian = temp[4]
+    ltMedian = temp[4] #see the headings in line before the above for indices
     sevenDayMALF = temp[8]
     MAMF = temp[9]
     
@@ -296,7 +345,18 @@ def genHydroStats():
     
     print("Exceedence probabilities and Observations on Key parameters")
     annualStatsTable.display_notebook()
-
+    
+    #trends on low flow
+    print("Trends in 7-day annual low flow")
+    trendClim = pmk.original_test(Ann7daymin(dailyData,int(climStart.year),int(myStartDate[:4])))
+    print(trendClim.trend,'for',int(climStart.year),'-',int(myStartDate[:4]))
+    trendAll = pmk.original_test(Ann7daymin(dailyData,int(climStart.year),int(myEndDate[:4])))
+    print(trendAll.trend,'for',int(climStart.year),'-',int(myEndDate[:4]))
+    #print(type(trendClim.h), trendAll)
+    if trendClim.h and trendAll.h :
+            print(int(climStart.year),'-',int(myStartDate[:4]),':', trendClim.slope)
+            print(int(climStart.year),'-',int(myEndDate[:4]),':',trendAll.slope)
+    
 def flowExceedanceProbab(myData,reqProbab,reqProbabInv):
     #print(reqProbab,reqProbabInv)
     myData = np.sort(myData)
@@ -321,22 +381,24 @@ def flowExceedanceProbab(myData,reqProbab,reqProbabInv):
         y_interpI.append(fI(x_interpI))
         
     return y_interp, y_interpI
-    
+
+def Ann7daymin(dailyData,stDate,eDate):
+    Annual7daymin = []
+    for yr in range(stDate,eDate+1): #range end is not inclusive so add 1
+        thsYrDf = dailyData[dailyData["timestamp"].between(np.datetime64(datetime.strptime(str(yr)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S')), np.datetime64(datetime.strptime(str(yr+1)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S')))]
+        #print(thsYrDf.head())
+        Annual7daymin.append(thsYrDf['7daymean'].min())#[myMeasurement].min()) #check this part again
+    return Annual7daymin
+
 def genStatsSubFn(dailyData,InstData,stDate,eDate,ltMedian=False):
-    #temp = np.datetime64(datetime.strptime(myEndDate,'%Y-%m-%d %H:%M:%S'))
+    #temp = np.datetime64(datetime.strptime(eDate,'%Y-%m-%d %H:%M:%S'))
     #print(temp.year)
-    
     strDtObj = np.datetime64(datetime.strptime(str(stDate)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S'))
     endDtObj = np.datetime64(datetime.strptime(str(eDate)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S'))
 
     Annualmax = []
-    Annual7daymin = []
     if (eDate-stDate) > 1:
-        for yr in range(stDate,eDate+1): #range end is not inclusive so add 1
-            thsYrDf = dailyData[dailyData["timestamp"].between(np.datetime64(datetime.strptime(str(yr)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S')),
-                                                          np.datetime64(datetime.strptime(str(yr+1)+'-07-01 00:00:00','%Y-%m-%d %H:%M:%S')))]
-            #print(thsYrDf.head())
-            Annual7daymin.append(thsYrDf[myMeasurement].min())
+        Annual7daymin = Ann7daymin(dailyData,stDate,eDate)
         #print(Annual7daymin)
         sevendayMALF = np.nanmean(np.array(Annual7daymin), dtype=np.float64)
     
@@ -369,7 +431,7 @@ def genStatsSubFn(dailyData,InstData,stDate,eDate,ltMedian=False):
     pc95 = temp[3]
     #print(temp1)
     
-    QhalfMedian = temp1[0]
+    QhalfMedian = 100 - temp1[0]
     QFRE3 = temp1[1]
     Qmean = temp[2]
     
